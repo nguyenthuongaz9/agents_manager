@@ -1,0 +1,31 @@
+# D-AMS Kitty Session
+# Save to ~/.config/kitty/sessions/d-ams.conf
+# Launch with: kitty --session ~/.config/kitty/sessions/d-ams.conf
+
+# Main window with Agent Manager
+new_os_window
+title D-AMS Manager
+cd ~/projects
+env DAMS_MODE=manager
+launch bash -c "agents"
+
+# Claude Code tab
+launch tab
+title 🟣 Claude Code
+cd ~/projects
+env DAMS_AGENT=CLAUDE
+launch bash -c "echo '=== Claude Code ==='; claude"
+
+# Gemini tab
+launch tab
+title 🔵 Gemini
+cd ~/projects
+env DAMS_AGENT=GEMINI
+launch bash -c "echo '=== Gemini ==='; gemini"
+
+# OpenCode tab
+launch tab
+title 🟢 OpenCode
+cd ~/projects
+env DAMS_AGENT=OPENCODE
+launch bash -c "echo '=== OpenCode ==='; opencode"
