@@ -225,7 +225,8 @@ cmd_view_log() {
     ui_clear
     ui_header "Session Logs"
 
-    local logs=("$SESSION_DIR"/*.log 2>/dev/null)
+    local logs
+    logs=("$SESSION_DIR"/*.log)
     if [ ${#logs[@]} -eq 0 ] || [ "${logs[0]}" = "$SESSION_DIR/*.log" ]; then
         echo -e "${YELLOW}No session logs found.${NC}"
         ui_pause
@@ -235,9 +236,9 @@ cmd_view_log() {
     echo -e "${BOLD}Recent sessions:${NC}"
     local i=1
     local sorted_logs=()
-    while IFS= read -r -d '' f; do
+    while IFS= read -r f; do
         sorted_logs+=("$f")
-    done < <(find "$SESSION_DIR" -name "*.log" -printf '%T@ %p\0' 2>/dev/null | sort -rnz | while IFS= read -r -d '' line; do echo "${line#* }"; done)
+    done < <(find "$SESSION_DIR" -name "*.log" -printf '%T@ %p\0' 2>/dev/null | sort -rnz | while IFS= read -r -d '' line; do printf '%s\n' "${line#* }"; done)
 
     if [ ${#sorted_logs[@]} -eq 0 ]; then
         for f in "$SESSION_DIR"/*.log; do
@@ -393,8 +394,9 @@ main() {
             ;;
         --log)
             # Show recent logs
-            local logs=("$SESSION_DIR"/*.log 2>/dev/null)
-            if [ ${#logs[@]} -gt 0 ]; then
+            local logs
+            logs=("$SESSION_DIR"/*.log)
+            if [ ${#logs[@]} -gt 0 ] && [ "${logs[0]}" != "$SESSION_DIR/*.log" ]; then
                 tail -50 "${logs[-1]}"
             else
                 echo "No logs found."
@@ -409,10 +411,9 @@ main() {
 }
 
 # Check deps
-for cmd in read printf echo; do
+for cmd in read printf echo timeout nohup; do
     if ! command -v "$cmd" &>/dev/null; then
-        echo "Critical dependency missing: $cmd"
-        exit 1
+        echo "WARNING: '$cmd' not found (some features may fall back)"
     fi
 done
 
