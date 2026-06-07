@@ -1,0 +1,867 @@
+#!/usr/bin/env bash
+#===============================================================================
+# D-AMS Agent Manager
+# Dynamic Agent Management System - Terminal Orchestrator
+# Manages: Claude Code | Gemini | OpenCode
+# Platform: Linux (Kitty Terminal)
+#===============================================================================
+
+VERSION="1.1.0"
+BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT_DIR="$(cd "$BIN_DIR/.." && pwd)"
+CONFIG_DIR="$ROOT_DIR/config"
+LIB_DIR="$ROOT_DIR/lib"
+SESSION_DIR="${SESSION_DIR:-$ROOT_DIR/sessions}"
+PROMPTS_DIR="$ROOT_DIR/prompts"
+CURRENT_PHASE=1
+
+# Load config
+source "$CONFIG_DIR/agents.conf"
+
+# Load libraries
+source "$LIB_DIR/logging.sh"
+source "$LIB_DIR/ui.sh"
+source "$LIB_DIR/kitty.sh"
+source "$LIB_DIR/state.sh"
+
+# ---- Globals ----
+CURRENT_SESSION=""
+LEADER="$DEFAULT_LEADER"
+PROJECT_NAME=""
+PROJECT_TYPE=""
+PROJECT_REQUIREMENTS=""
+CURRENT_WORKSPACE=""
+
+# ---- Helper: resolve agent key from number ----
+agent_key_from_num() {
+    local idx=$(( $1 - 1 ))
+    if [ "$idx" -ge 0 ] && [ "$idx" -lt "${#AGENTS_LIST[@]}" ]; then
+        echo "${AGENTS_LIST[$idx]}"
+    else
+        echo ""
+    fi
+}
+
+# ---- Display agent status line for current project ----
+_show_agent_statuses() {
+    local workspace="${1:-$CURRENT_WORKSPACE}"
+    [ -z "$workspace" ] && return
+    [ ! -f "$workspace/project-state.conf" ] && return
+
+    echo -e "${BOLD}Agent Progress:${NC}"
+    for key in "${AGENTS_LIST[@]}"; do
+        local name_var="AGENT_${key}_NAME"
+        local icon_var="AGENT_${key}_ICON"
+        local status checkpoint retry_count
+        status=$(state_get "$workspace" "AGENT_${key}_STATUS")
+        checkpoint=$(state_get "$workspace" "AGENT_${key}_CHECKPOINT")
+        retry_count=$(state_get "$workspace" "AGENT_${key}_RETRY_COUNT")
+
+        local status_str
+        case "${status:-pending}" in
+            completed)    status_str="${GREEN}✓ completed${NC}" ;;
+            running)      status_str="${CYAN}▶ running${NC}" ;;
+            paused_token) status_str="${YELLOW}⏸ paused (token limit, retry ${retry_count})${NC}" ;;
+            failed)       status_str="${RED}✗ failed${NC}" ;;
+            *)            status_str="${DIM}○ pending${NC}" ;;
+        esac
+        printf "  %s %-14s " "${!icon_var}" "${!name_var}"
+        echo -e "$status_str"
+        if [ -n "$checkpoint" ]; then
+            local short="${checkpoint:0:72}"
+            [ "${#checkpoint}" -gt 72 ] && short+="..."
+            echo -e "    ${DIM}↳ ${short}${NC}"
+        fi
+    done
+    echo ""
+}
+
+# ---- Main Menu ----
+main_menu() {
+    while true; do
+        ui_clear
+        local subtitle="${PROJECT_NAME:+"Project: ${PROJECT_NAME} (Phase ${CURRENT_PHASE}) | Leader: $(eval echo \$AGENT_${LEADER}_NAME)"}"
+        ui_header "Main Menu" "$subtitle"
+
+        echo -e "${BOLD}Available Agents:${NC}"
+        for i in "${!AGENTS_LIST[@]}"; do
+            local key="${AGENTS_LIST[$i]}"
+            local name_var="AGENT_${key}_NAME"
+            local icon_var="AGENT_${key}_ICON"
+            local role_var="AGENT_${key}_ROLE"
+            echo -e "  ${!icon_var} ${BOLD}${!name_var}${NC} ${DIM}(${!role_var})${NC}"
+        done
+        echo ""
+
+        local options=(
+            "Start New Project & Assemble Team"
+            "Continue Existing Project"
+            "Launch Agent (Kitty tab)"
+            "Assign Task to Agent"
+            "Update Agent Progress / Checkpoint"
+            "View Session Log"
+            "Manage Sessions"
+            "Workflow Status"
+            "Configure Settings"
+            "Help / About"
+        )
+
+        ui_menu "Select Action:" "${options[@]}"
+        ui_ask "Choice"
+        read -r choice || cmd_exit
+
+        case "$choice" in
+            1) cmd_new_project ;;
+            2) cmd_continue_project ;;
+            3) cmd_launch_agent ;;
+            4) cmd_assign_task ;;
+            5) cmd_update_checkpoint ;;
+            6) cmd_view_log ;;
+            7) cmd_manage_sessions ;;
+            8) cmd_workflow ;;
+            9) cmd_settings ;;
+            10) cmd_help ;;
+            0) cmd_exit ;;
+            *) echo -e "${RED}Invalid choice${NC}"; sleep 1 ;;
+        esac
+    done
+}
+
+# ---- Command: New Project ----
+cmd_new_project() {
+    ui_clear
+    ui_header "New Project" "Phase 1: Intake & Analysis"
+
+    while true; do
+        ui_read PROJECT_NAME "Enter project name" "my-project"
+        PROJECT_NAME="${PROJECT_NAME//[\/. ]/-}"
+        PROJECT_NAME="${PROJECT_NAME#-}"
+        PROJECT_NAME="${PROJECT_NAME%-}"
+        [ -n "$PROJECT_NAME" ] && break
+        echo -e "${RED}Project name cannot be empty.${NC}"
+    done
+    ui_read PROJECT_TYPE "Enter project type (web/mobile/cli/ai)" "cli"
+    [ -z "$PROJECT_TYPE" ] && PROJECT_TYPE="cli"
+
+    echo ""
+    echo -e "${CYAN}${BOLD}Project Requirements${NC}"
+    echo -e "  ${CYAN}1)${NC} Type requirements"
+    echo -e "  ${CYAN}2)${NC} Load from file (.txt / .md)"
+    echo ""
+    ui_ask "Choice" "1"
+    read -r req_src
+    PROJECT_REQUIREMENTS=""
+    case "$req_src" in
+        2)
+            ui_read req_file "Path to requirements file" ""
+            if [ -f "$req_file" ]; then
+                PROJECT_REQUIREMENTS=$(cat "$req_file")
+                local line_count
+                line_count=$(wc -l < "$req_file")
+                echo -e "${GREEN}✓ Loaded ${line_count} lines from ${req_file}${NC}"
+            else
+                echo -e "${RED}File not found: ${req_file} — switching to manual entry${NC}"
+                req_src=1
+            fi
+            ;;
+    esac
+    if [ "$req_src" != "2" ] || [ -z "$PROJECT_REQUIREMENTS" ]; then
+        echo -e "${DIM}(nhập requirements, Enter trống để kết thúc):${NC}"
+        while true; do
+            read -r req_line
+            [ -z "$req_line" ] && break
+            PROJECT_REQUIREMENTS+="${req_line} "
+        done
+        PROJECT_REQUIREMENTS="${PROJECT_REQUIREMENTS% }"
+    fi
+
+    local team_desc=""
+    case "$PROJECT_TYPE" in
+        web)    team_desc="Web App Team: Backend Dev + Frontend Dev + DBA" ;;
+        mobile) team_desc="Mobile Team: Mobile Dev + UI/UX + Backend API" ;;
+        cli)    team_desc="CLI Tool Team: Systems Programmer + Tech Writer" ;;
+        ai)     team_desc="AI Team: ML Engineer + Data Scientist + DBA" ;;
+        *)      team_desc="Custom assembly based on requirements" ;;
+    esac
+
+    echo ""
+    echo -e "${BOLD}Project:${NC}      ${PROJECT_NAME}"
+    echo -e "${BOLD}Type:${NC}         ${PROJECT_TYPE}"
+    echo -e "${BOLD}Team:${NC}         ${team_desc}"
+    echo -e "${BOLD}Leader:${NC}       $(eval echo \$AGENT_${LEADER}_NAME)"
+    local req_preview="${PROJECT_REQUIREMENTS:0:80}"
+    [ "${#PROJECT_REQUIREMENTS}" -gt 80 ] && req_preview+="..."
+    echo -e "${BOLD}Requirements:${NC} ${DIM}${req_preview}${NC}"
+    echo ""
+    ui_confirm "Start project and assemble team?"
+
+    if [ $? -eq 0 ]; then
+        log_init "$PROJECT_NAME"
+        CURRENT_SESSION="$LOG_FILE"
+        log_phase 1 "Intake & Analysis"
+        log_info "PROJECT" "Created project: ${PROJECT_NAME} (${PROJECT_TYPE})"
+        log_info "LEADER"  "Leader: $(eval echo \$AGENT_${LEADER}_NAME)"
+
+        local workspace="${SESSION_DIR}/${PROJECT_NAME}_workspace"
+        mkdir -p "$workspace"
+        printf '%s\n' "$PROJECT_REQUIREMENTS" > "$workspace/requirements.md"
+        printf '# %s\n\nProject type: %s\n\nSee requirements.md for full requirements.\n' \
+            "$PROJECT_NAME" "$PROJECT_TYPE" > "$workspace/CLAUDE.md"
+        log_info "WORKSPACE" "Created: $workspace"
+
+        # Initialize project state file
+        state_init "$workspace" "$PROJECT_NAME" "$PROJECT_TYPE" 2
+        CURRENT_WORKSPACE="$workspace"
+
+        # Record default tasks for each agent in state
+        for key in "${AGENTS_LIST[@]}"; do
+            local default_task
+            case "$key" in
+                CLAUDE)   default_task="Backend: server, REST API, database schema, business logic" ;;
+                GEMINI)   default_task="Tech Lead: architecture design, team coordination, code review" ;;
+                OPENCODE) default_task="Frontend & QA: UI components, frontend logic, tests" ;;
+                *)        default_task="Implement assigned project components" ;;
+            esac
+            state_update_agent "$workspace" "$key" "pending" "$default_task"
+        done
+
+        CURRENT_PHASE=2
+        log_phase 2 "Team Assembly"
+
+        echo ""
+        echo -e "${GREEN}Team Assembly Phase${NC}"
+        echo -e "Launching agents in Kitty tabs..."
+        kitty_assemble_team "$ROOT_DIR" "$PROJECT_NAME" "$PROJECT_TYPE" "$PROJECT_REQUIREMENTS" "$workspace"
+
+        log_info "TEAM" "Team assembled for ${PROJECT_NAME}"
+        CURRENT_PHASE=3
+        state_update_phase "$workspace" 3
+
+        echo ""
+        echo -e "${GREEN}✓ Project ${PROJECT_NAME} initialized${NC}"
+        echo -e "  ${DIM}Workspace:${NC}   ${workspace}"
+        echo -e "  ${DIM}Session log:${NC} $LOG_FILE"
+        echo ""
+        echo -e "${DIM}Agents write checkpoints to:${NC}"
+        for key in "${AGENTS_LIST[@]}"; do
+            echo -e "  ${DIM}${workspace}/checkpoint-${key}.md${NC}"
+        done
+        ui_pause
+    fi
+}
+
+# ---- Command: Continue Existing Project ----
+cmd_continue_project() {
+    ui_clear
+    ui_header "Continue Project" "Resume an existing project"
+
+    # Collect projects with state files
+    local projects=()
+    while IFS= read -r entry; do
+        [ -n "$entry" ] && projects+=("$entry")
+    done < <(state_list_projects "$SESSION_DIR")
+
+    if [ ${#projects[@]} -eq 0 ]; then
+        echo -e "${YELLOW}No saved projects found.${NC}"
+        echo -e "${DIM}Start a new project first (option 1).${NC}"
+        ui_pause
+        return
+    fi
+
+    echo -e "${BOLD}Saved Projects:${NC}"
+    echo ""
+    local i=1
+    for entry in "${projects[@]}"; do
+        IFS='|' read -r ws name phase updated <<< "$entry"
+        echo -e "  ${CYAN}${i})${NC} ${BOLD}${name}${NC}"
+        echo -e "     ${DIM}Phase: ${phase}  |  Last updated: ${updated}${NC}"
+        echo -e "     ${DIM}${ws}${NC}"
+        echo ""
+        ((i++))
+    done
+    ui_ask "Choose project to resume (0 to cancel)"
+    read -r pchoice
+
+    if ! [[ "$pchoice" =~ ^[0-9]+$ ]]; then return; fi
+    [ "$pchoice" -eq 0 ] && return
+    if [ "$pchoice" -lt 1 ] || [ "$pchoice" -gt "${#projects[@]}" ]; then
+        echo -e "${RED}Invalid choice${NC}"; sleep 1; return
+    fi
+
+    local idx=$((pchoice - 1))
+    IFS='|' read -r workspace _ _ _ <<< "${projects[$idx]}"
+
+    # Load project state
+    if ! state_load "$workspace"; then
+        echo -e "${RED}Failed to load project state from: $workspace${NC}"
+        ui_pause
+        return
+    fi
+
+    CURRENT_WORKSPACE="$workspace"
+
+    ui_clear
+    ui_header "Continue Project" "Project: ${PROJECT_NAME} (Phase ${CURRENT_PHASE})"
+
+    echo -e "${BOLD}Project:${NC} ${PROJECT_NAME}"
+    echo -e "${BOLD}Type:${NC}    ${PROJECT_TYPE}"
+    echo -e "${BOLD}Phase:${NC}   ${CURRENT_PHASE}"
+    echo ""
+    _show_agent_statuses "$workspace"
+
+    ui_confirm "Relaunch agents to continue work?"
+    if [ $? -ne 0 ]; then return; fi
+
+    log_init "${PROJECT_NAME}-resume"
+    CURRENT_SESSION="$LOG_FILE"
+    log_info "RESUME" "Resuming project: ${PROJECT_NAME} (Phase ${CURRENT_PHASE})"
+
+    # Build continue prompts for agents that are not completed
+    for key in "${AGENTS_LIST[@]}"; do
+        local status task checkpoint
+        status=$(state_get "$workspace" "AGENT_${key}_STATUS")
+        task=$(state_get "$workspace" "AGENT_${key}_TASK")
+
+        # Read checkpoint from file if not stored in state
+        checkpoint=""
+        local cp_file="$workspace/checkpoint-${key}.md"
+        [ -f "$cp_file" ] && checkpoint=$(cat "$cp_file")
+        [ -z "$checkpoint" ] && checkpoint=$(state_get "$workspace" "AGENT_${key}_CHECKPOINT")
+
+        if [ "$status" = "completed" ]; then
+            log_info "SKIP" "Agent ${key} already completed — not relaunching"
+            continue
+        fi
+
+        kitty_build_prompt         "$key" "$PROJECT_NAME" "$PROJECT_TYPE" \
+            > "/tmp/d-ams-${key}.brief"
+        kitty_build_continue_prompt "$key" "$PROJECT_NAME" "$PROJECT_TYPE" \
+            "$task" "$checkpoint" "$workspace" \
+            > "/tmp/d-ams-${key}.msg"
+
+        state_update_agent "$workspace" "$key" "pending"
+    done
+
+    echo ""
+    echo -e "${GREEN}Resuming team for ${PROJECT_NAME}...${NC}"
+    kitty_assemble_team "$ROOT_DIR" "$PROJECT_NAME" "$PROJECT_TYPE" \
+        "$PROJECT_REQUIREMENTS" "$workspace"
+
+    log_info "TEAM" "Team reassembled for resume: ${PROJECT_NAME}"
+    echo ""
+    echo -e "${GREEN}✓ Project resumed${NC}"
+    ui_pause
+}
+
+# ---- Command: Update Agent Checkpoint ----
+cmd_update_checkpoint() {
+    ui_clear
+    ui_header "Update Agent Progress" "Save agent checkpoint manually"
+
+    if [ -z "$CURRENT_WORKSPACE" ]; then
+        echo -e "${YELLOW}No active project. Start or continue a project first.${NC}"
+        ui_pause
+        return
+    fi
+
+    local options=()
+    for key in "${AGENTS_LIST[@]}"; do
+        local name_var="AGENT_${key}_NAME"
+        local icon_var="AGENT_${key}_ICON"
+        local status
+        status=$(state_get "$CURRENT_WORKSPACE" "AGENT_${key}_STATUS")
+        options+=("${!icon_var} ${!name_var} ${DIM}[${status:-pending}]${NC}")
+    done
+    options+=("Cancel")
+
+    ui_menu "Select agent to update:" "${options[@]}"
+    ui_ask "Choice"
+    read -r choice
+
+    if ! [[ "$choice" =~ ^[0-9]+$ ]]; then return; fi
+    local cancel_num=$(( ${#AGENTS_LIST[@]} + 1 ))
+    [ "$choice" -eq 0 ] || [ "$choice" -eq "$cancel_num" ] && return
+
+    if [ "$choice" -ge 1 ] && [ "$choice" -le "${#AGENTS_LIST[@]}" ]; then
+        local key; key=$(agent_key_from_num "$choice")
+        local name_var="AGENT_${key}_NAME"
+        local name="${!name_var}"
+
+        echo ""
+        echo -e "${BOLD}Checkpoint for ${name}:${NC}"
+        echo -e "${DIM}Describe what has been done and what remains (Enter when done):${NC}"
+
+        local checkpoint_lines=""
+        while true; do
+            read -r line
+            [ -z "$line" ] && break
+            checkpoint_lines+="${line} "
+        done
+        checkpoint_lines="${checkpoint_lines% }"
+
+        if [ -n "$checkpoint_lines" ]; then
+            # Save to checkpoint file in workspace
+            local cp_file="$CURRENT_WORKSPACE/checkpoint-${key}.md"
+            {
+                printf '# Checkpoint: %s\n' "$name"
+                printf 'Updated: %s\n\n' "$(date +%Y-%m-%dT%H:%M:%S)"
+                printf '%s\n' "$checkpoint_lines"
+            } > "$cp_file"
+
+            state_update_agent "$CURRENT_WORKSPACE" "$key" \
+                "$(state_get "$CURRENT_WORKSPACE" "AGENT_${key}_STATUS")" \
+                "" "$checkpoint_lines"
+
+            echo -e "${GREEN}✓ Checkpoint saved${NC}"
+            log_info "CHECKPOINT" "Agent ${name}: ${checkpoint_lines:0:60}"
+        fi
+        ui_pause
+    fi
+}
+
+# ---- Command: Launch Agent ----
+cmd_launch_agent() {
+    ui_clear
+    ui_header "Launch Agent" "Start an agent in Kitty terminal"
+
+    local options=()
+    for key in "${AGENTS_LIST[@]}"; do
+        local name_var="AGENT_${key}_NAME"
+        local icon_var="AGENT_${key}_ICON"
+        options+=("${!icon_var} ${!name_var}")
+    done
+
+    ui_menu "Select Agent to Launch:" "${options[@]}"
+    ui_ask "Choice"
+    read -r choice
+
+    if [ "$choice" -ge 1 ] && [ "$choice" -le "${#AGENTS_LIST[@]}" ]; then
+        local key
+        key=$(agent_key_from_num "$choice")
+        local name_var="AGENT_${key}_NAME"
+        local name="${!name_var}"
+
+        echo ""
+        ui_confirm "Launch ${name} in a new Kitty window?"
+
+        if [ $? -eq 0 ]; then
+            kitty_launch_agent_tab "$key" "${CURRENT_WORKSPACE:-$(pwd)}"
+            log_info "LAUNCH" "Launched ${name}"
+        fi
+    fi
+    ui_pause
+}
+
+# ---- Command: Assign Task ----
+cmd_assign_task() {
+    ui_clear
+    ui_header "Assign Task" "Phase 4: Execution"
+
+    while true; do
+        local options=()
+        for key in "${AGENTS_LIST[@]}"; do
+            local name_var="AGENT_${key}_NAME"
+            local icon_var="AGENT_${key}_ICON"
+            local role_var="AGENT_${key}_ROLE"
+            options+=("${!icon_var} ${!name_var} ${DIM}(${!role_var})${NC}")
+        done
+        options+=("Cancel")
+
+        ui_menu "Assign task to which agent?" "${options[@]}"
+        ui_ask "Choice"
+        read -r choice
+
+        if [ "$choice" -eq 0 ] || [ "$choice" -eq "$((${#AGENTS_LIST[@]} + 1))" ]; then
+            return
+        fi
+
+        if [ "$choice" -ge 1 ] && [ "$choice" -le "${#AGENTS_LIST[@]}" ]; then
+            local key
+            key=$(agent_key_from_num "$choice")
+            local name_var="AGENT_${key}_NAME"
+            local name="${!name_var}"
+            local icon_var="AGENT_${key}_ICON"
+            local icon="${!icon_var}"
+
+            ui_read task_desc "Describe the task for ${name}" ""
+
+            if [ -n "$task_desc" ]; then
+                log_agent_start "$name" "$task_desc"
+
+                # Update state file with assigned task
+                if [ -n "$CURRENT_WORKSPACE" ]; then
+                    state_update_agent "$CURRENT_WORKSPACE" "$key" "pending" "$task_desc"
+                    # Write task as msg for the agent
+                    kitty_build_continue_prompt "$key" "${PROJECT_NAME:-project}" \
+                        "${PROJECT_TYPE:-}" "$task_desc" "" "$CURRENT_WORKSPACE" \
+                        > "/tmp/d-ams-${key}.msg"
+                    kitty_build_prompt "$key" "${PROJECT_NAME:-project}" \
+                        "${PROJECT_TYPE:-}" > "/tmp/d-ams-${key}.brief"
+                fi
+
+                echo ""
+                echo -e "${icon} Assigning to ${BOLD}${name}${NC}..."
+                echo -e "  ${DIM}Task:${NC} ${task_desc}"
+                echo ""
+
+                kitty_launch_agent_tab "$key" "${CURRENT_WORKSPACE:-$ROOT_DIR}" \
+                    "${name}: ${task_desc:0:40}"
+
+                log_info "TASK" "Assigned '${task_desc}' to ${name}"
+                echo -e "${GREEN}✓ Task assigned${NC}"
+                echo -e "  ${DIM}Logged to:${NC} ${LOG_FILE}"
+            fi
+            ui_pause
+            break
+        fi
+    done
+}
+
+# ---- Command: View Log ----
+cmd_view_log() {
+    ui_clear
+    ui_header "Session Logs"
+
+    local logs
+    logs=("$SESSION_DIR"/*.log)
+    if [ ${#logs[@]} -eq 0 ] || [ "${logs[0]}" = "$SESSION_DIR/*.log" ]; then
+        echo -e "${YELLOW}No session logs found.${NC}"
+        ui_pause
+        return
+    fi
+
+    echo -e "${BOLD}Recent sessions:${NC}"
+    local i=1
+    local sorted_logs=()
+    while IFS= read -r f; do
+        sorted_logs+=("$f")
+    done < <(find "$SESSION_DIR" -name "*.log" -printf '%T@ %p\0' 2>/dev/null | sort -rnz | while IFS= read -r -d '' line; do printf '%s\n' "${line#* }"; done)
+
+    if [ ${#sorted_logs[@]} -eq 0 ]; then
+        for f in "$SESSION_DIR"/*.log; do
+            [ -f "$f" ] && sorted_logs+=("$f")
+        done
+    fi
+
+    for f in "${sorted_logs[@]}"; do
+        local name
+        name=$(basename "$f")
+        echo -e "  ${CYAN}${i})${NC} ${name}"
+        ((i++))
+    done
+    echo ""
+    ui_ask "View which log? (0 to cancel)"
+    read -r lchoice
+
+    if [ "$lchoice" -ge 1 ] && [ "$lchoice" -le "${#sorted_logs[@]}" ]; then
+        local idx=$((lchoice - 1))
+        LESS="-RX" less "${sorted_logs[$idx]}"
+    fi
+}
+
+# ---- Command: Manage Sessions ----
+cmd_manage_sessions() {
+    while true; do
+        ui_clear
+        ui_header "Manage Sessions" "Clean up logs and project workspaces"
+
+        # Count logs and workspaces
+        local log_count log_size ws_count
+        log_count=$(find "$SESSION_DIR" -maxdepth 1 -name "*.log" 2>/dev/null | wc -l)
+        log_size=$(du -sh "$SESSION_DIR"/*.log 2>/dev/null | awk '{sum+=$1} END{print sum"K"}' || echo "0K")
+        ws_count=$(find "$SESSION_DIR" -maxdepth 1 -type d -name "*_workspace" 2>/dev/null | wc -l)
+
+        echo -e "${BOLD}Session data in:${NC} ${SESSION_DIR}"
+        echo ""
+        echo -e "  ${CYAN}●${NC} Session logs:       ${log_count} files"
+        echo -e "  ${CYAN}●${NC} Project workspaces: ${ws_count} directories"
+        echo ""
+
+        # List workspaces with state
+        if [ "$ws_count" -gt 0 ]; then
+            echo -e "${BOLD}Saved Projects:${NC}"
+            while IFS='|' read -r ws name phase updated; do
+                local ws_basename
+                ws_basename=$(basename "$ws")
+                echo -e "  ${DIM}${ws_basename}${NC}  Phase ${phase}  |  ${updated}"
+            done < <(state_list_projects "$SESSION_DIR")
+            echo ""
+        fi
+
+        local options=(
+            "Delete session logs only (*.log)"
+            "Delete a project workspace"
+            "Delete ALL session data (full clean)"
+        )
+        ui_menu "Action:" "${options[@]}"
+        ui_ask "Choice"
+        read -r choice
+
+        case "$choice" in
+            0) return ;;
+            1) _sessions_delete_logs ;;
+            2) _sessions_delete_workspace ;;
+            3) _sessions_delete_all ;;
+            *) echo -e "${RED}Invalid choice${NC}"; sleep 1 ;;
+        esac
+    done
+}
+
+_sessions_delete_logs() {
+    local count
+    count=$(find "$SESSION_DIR" -maxdepth 1 -name "*.log" 2>/dev/null | wc -l)
+    if [ "$count" -eq 0 ]; then
+        echo -e "${YELLOW}No session logs found.${NC}"
+        ui_pause; return
+    fi
+    echo -e "${YELLOW}This will delete ${count} session log file(s).${NC}"
+    ui_confirm "Continue?"
+    if [ $? -eq 0 ]; then
+        rm -f "$SESSION_DIR"/*.log
+        LOG_FILE=""  # Reset so logging reinitializes
+        echo -e "${GREEN}✓ Deleted ${count} log file(s)${NC}"
+        log_init "manager-session"
+    fi
+    ui_pause
+}
+
+_sessions_delete_workspace() {
+    local projects=()
+    while IFS= read -r entry; do
+        [ -n "$entry" ] && projects+=("$entry")
+    done < <(state_list_projects "$SESSION_DIR")
+
+    if [ ${#projects[@]} -eq 0 ]; then
+        echo -e "${YELLOW}No project workspaces found.${NC}"
+        ui_pause; return
+    fi
+
+    echo -e "${BOLD}Select project to delete:${NC}"
+    echo ""
+    local i=1
+    for entry in "${projects[@]}"; do
+        IFS='|' read -r ws name phase updated <<< "$entry"
+        echo -e "  ${CYAN}${i})${NC} ${BOLD}${name}${NC}  Phase ${phase}  ${DIM}${updated}${NC}"
+        ((i++))
+    done
+    echo ""
+    ui_ask "Choice (0 to cancel)"
+    read -r pchoice
+
+    [[ "$pchoice" =~ ^[0-9]+$ ]] || return
+    [ "$pchoice" -eq 0 ] && return
+    [ "$pchoice" -lt 1 ] || [ "$pchoice" -gt "${#projects[@]}" ] && return
+
+    local idx=$((pchoice - 1))
+    IFS='|' read -r ws name _ _ <<< "${projects[$idx]}"
+
+    echo -e "${RED}Will delete workspace: ${ws}${NC}"
+    ui_confirm "This cannot be undone. Continue?"
+    if [ $? -eq 0 ]; then
+        # If this is the active project, clear it
+        [ "$ws" = "$CURRENT_WORKSPACE" ] && CURRENT_WORKSPACE="" && PROJECT_NAME="" && CURRENT_PHASE=1
+        rm -rf "$ws"
+        echo -e "${GREEN}✓ Deleted workspace: ${name}${NC}"
+        log_info "DELETE" "Removed project workspace: ${name}"
+    fi
+    ui_pause
+}
+
+_sessions_delete_all() {
+    local log_count ws_count
+    log_count=$(find "$SESSION_DIR" -maxdepth 1 -name "*.log" 2>/dev/null | wc -l)
+    ws_count=$(find "$SESSION_DIR" -maxdepth 1 -type d -name "*_workspace" 2>/dev/null | wc -l)
+
+    if [ "$log_count" -eq 0 ] && [ "$ws_count" -eq 0 ]; then
+        echo -e "${YELLOW}Sessions directory is already empty.${NC}"
+        ui_pause; return
+    fi
+
+    echo -e "${RED}${BOLD}WARNING: This will permanently delete:${NC}"
+    echo -e "  - ${log_count} session log file(s)"
+    echo -e "  - ${ws_count} project workspace(s) and all their state files"
+    echo ""
+    ui_confirm "Delete ALL session data?"
+    if [ $? -eq 0 ]; then
+        rm -f "$SESSION_DIR"/*.log
+        find "$SESSION_DIR" -maxdepth 1 -type d -name "*_workspace" -exec rm -rf {} + 2>/dev/null
+        CURRENT_WORKSPACE="" PROJECT_NAME="" CURRENT_PHASE=1 LOG_FILE=""
+        echo -e "${GREEN}✓ All session data deleted${NC}"
+        log_init "manager-session"
+    fi
+    ui_pause
+}
+
+# ---- Command: Workflow ----
+cmd_workflow() {
+    ui_clear
+    ui_header "Workflow Status" "${PROJECT_NAME:+"Project: ${PROJECT_NAME}"}"
+    ui_phase_progress "$CURRENT_PHASE"
+
+    # Show agent progress for current project
+    [ -n "$CURRENT_WORKSPACE" ] && _show_agent_statuses "$CURRENT_WORKSPACE"
+
+    echo -e "${BOLD}Current Phase Actions:${NC}"
+    case $CURRENT_PHASE in
+        1) echo "  → Define project scope & requirements" ;;
+        2) echo "  → Assign team roles & launch agents" ;;
+        3) echo "  → Create task breakdown & architecture" ;;
+        4) echo "  → Agents execute assigned tasks" ;;
+        5) echo "  → Quality assurance & testing" ;;
+        6) echo "  → Package & deliver final product" ;;
+    esac
+    echo ""
+
+    if [ "$CURRENT_PHASE" -lt 6 ]; then
+        ui_confirm "Advance to next phase?"
+        if [ $? -eq 0 ]; then
+            ((CURRENT_PHASE++))
+            log_phase "$CURRENT_PHASE" "${PHASES[$((CURRENT_PHASE-1))]#*: }"
+            [ -n "$CURRENT_WORKSPACE" ] && state_update_phase "$CURRENT_WORKSPACE" "$CURRENT_PHASE"
+            echo -e "${GREEN}→ Advanced to Phase ${CURRENT_PHASE}${NC}"
+        fi
+    fi
+    ui_pause
+}
+
+# ---- Command: Settings ----
+cmd_settings() {
+    ui_clear
+    ui_header "Settings"
+
+    local current_leader_name_var="AGENT_${LEADER}_NAME"
+    echo -e "${BOLD}Current Leader:${NC} ${!current_leader_name_var}"
+    echo -e "${BOLD}Token retry wait:${NC} ${TOKEN_RETRY_WAIT:-3600}s (${TOKEN_RETRY_WAIT_MIN:-60} min default)"
+    echo ""
+
+    echo -e "${BOLD}Set Leader Agent:${NC}"
+    local i=1
+    for key in "${AGENTS_LIST[@]}"; do
+        local name_var="AGENT_${key}_NAME"
+        local icon_var="AGENT_${key}_ICON"
+        echo -e "  ${CYAN}${i})${NC} ${!icon_var} ${!name_var}"
+        ((i++))
+    done
+    echo ""
+    ui_ask "Choose Leader" "1"
+    read -r lchoice
+
+    if [ "$lchoice" -ge 1 ] && [ "$lchoice" -le "${#AGENTS_LIST[@]}" ]; then
+        LEADER=$(agent_key_from_num "$lchoice")
+        local new_name_var="AGENT_${LEADER}_NAME"
+        echo -e "${GREEN}✓ Leader set to ${!new_name_var}${NC}"
+        log_info "SETTINGS" "Leader changed to ${!new_name_var}"
+    fi
+    ui_pause
+}
+
+# ---- Command: Help ----
+cmd_help() {
+    ui_clear
+    ui_header "Help" "D-AMS v${VERSION}"
+
+    echo -e "${BOLD}OVERVIEW${NC}"
+    echo "  D-AMS orchestrates terminal AI agents to work as a coordinated team."
+    echo ""
+    echo -e "${BOLD}NEW FEATURES v1.1${NC}"
+    echo "  • Project State — progress saved in workspace/project-state.conf"
+    echo "  • Continue Project — resume from last checkpoint (menu option 2)"
+    echo "  • Checkpoints — agents write progress to checkpoint-<AGENT>.md"
+    echo "  • Token Auto-retry — agents pause ${TOKEN_RETRY_WAIT:-3600}s on rate limit, then resume"
+    echo "  • Manage Sessions — delete logs, workspaces, or full clean (menu option 7)"
+    echo ""
+    echo -e "${BOLD}MANAGED AGENTS${NC}"
+    for key in "${AGENTS_LIST[@]}"; do
+        ui_agent_card "$key"
+    done
+    echo ""
+    echo -e "${BOLD}WORKFLOW${NC}"
+    echo "  The system follows 6 phases:"
+    for phase in "${PHASES[@]}"; do
+        echo "    ${phase}"
+    done
+    echo ""
+    echo -e "${BOLD}TOKEN RETRY${NC}"
+    echo "  When an agent hits a rate/token limit, the Kitty tab:"
+    echo "    1. Detects the error (exit code + Claude log check)"
+    echo "    2. Shows a countdown (default: ${TOKEN_RETRY_WAIT:-3600}s = $(( ${TOKEN_RETRY_WAIT:-3600} / 60 )) min)"
+    echo "    3. Resumes from checkpoint-<AGENT>.md automatically"
+    echo "  Configure: TOKEN_RETRY_WAIT in config/agents.conf"
+    echo ""
+    echo -e "${BOLD}KITTY INTEGRATION${NC}"
+    echo "  Each agent runs in its own Kitty tab with a self-healing launcher."
+    echo ""
+    echo -e "${BOLD}CONFIGURATION${NC}"
+    echo "  Edit: config/agents.conf"
+    echo "  Logs: sessions/"
+    echo ""
+    ui_pause
+}
+
+# ---- Command: Exit ----
+cmd_exit() {
+    echo ""
+    echo -e "${CYAN}Thank you for using D-AMS Agent Manager${NC}"
+    echo -e "${DIM}Logs saved to: ${SESSION_DIR}${NC}"
+    [ -n "$CURRENT_WORKSPACE" ] && echo -e "${DIM}Project state: ${CURRENT_WORKSPACE}/project-state.conf${NC}"
+    echo ""
+    exit 0
+}
+
+# ---- Entry Point ----
+main() {
+    case "${1:-}" in
+        --help|-h)
+            cmd_help
+            exit 0
+            ;;
+        --version|-v)
+            echo "D-AMS Agent Manager v${VERSION}"
+            exit 0
+            ;;
+        --launch)
+            local target_key="$2"
+            if [ -n "$target_key" ]; then
+                local name_var="AGENT_${target_key}_NAME"
+                local name="${!name_var}"
+                if [ -n "$name" ]; then
+                    kitty_launch_agent_tab "$target_key"
+                else
+                    echo "Unknown agent: $target_key"
+                    echo "Available: ${AGENTS_LIST[*]}"
+                fi
+            fi
+            exit 0
+            ;;
+        --assemble)
+            log_init "quick-assembly"
+            kitty_assemble_team "$ROOT_DIR"
+            exit 0
+            ;;
+        --log)
+            local logs
+            logs=("$SESSION_DIR"/*.log)
+            if [ ${#logs[@]} -gt 0 ] && [ "${logs[0]}" != "$SESSION_DIR/*.log" ]; then
+                tail -50 "${logs[-1]}"
+            else
+                echo "No logs found."
+            fi
+            exit 0
+            ;;
+    esac
+
+    log_init "manager-session"
+    main_menu
+}
+
+export INPUTRC=/dev/null
+bind 'set enable-bracketed-paste off' 2>/dev/null
+bind 'set enable-meta-key off' 2>/dev/null
+
+for cmd in read printf echo timeout nohup; do
+    if ! command -v "$cmd" &>/dev/null; then
+        echo "WARNING: '$cmd' not found (some features may fall back)"
+    fi
+done
+
+main "$@"

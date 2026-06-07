@@ -1,4 +1,5 @@
-sessions/*.log
+d-ams/sessions/
+output/
 *.swp
 *.swo
 .DS_Store

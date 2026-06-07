@@ -10,7 +10,7 @@
 
 ---
 
-## AutoBuilder — Autonomous Agent Pipeline (new)
+## AutoBuilder — Autonomous Agent Pipeline
 
 **AutoBuilder** takes a project description (text or file) and runs a fully autonomous 6-stage pipeline powered by Claude Code CLI to generate a complete, working application with no user interaction.
 
@@ -84,10 +84,10 @@ output/                          <- generated apps land here
 
 ---
 
-## D-AMS Agent Manager (original)
+## D-AMS — Dynamic Agent Management System
 
 <div align="center">
-  <h2>🤖 D-AMS Agent Manager</h2>
+  <h2>D-AMS Agent Manager</h2>
   <p><strong>Dynamic Agent Management System</strong></p>
   <p>Orchestrate terminal AI agents — Claude Code, Gemini, OpenCode — as a coordinated team in Kitty terminal</p>
 </div>
@@ -113,9 +113,11 @@ Tool hoạt động trên **Kitty terminal** (Linux), mỗi agent được khở
 - **Interactive TUI** — Giao diện menu trực quan để quản lý dự án, agents và công việc
 - **Kitty Integration** — Mỗi agent chạy trong một tab/cửa sổ Kitty riêng
 - **Team Assembly** — Triệu tập cả 3 agents chỉ với một lệnh
+- **Project State** — Lưu trạng thái dự án, tiếp tục từ checkpoint
+- **Token Auto-retry** — Agents tự động chờ và tiếp tục khi gặp giới hạn token
+- **Manage Sessions** — Xóa logs, workspaces, hoặc dọn sạch hoàn toàn từ menu
 - **Task Assignment** — Giao việc cho từng agent kèm logging đầy đủ
 - **Session Logging** — Mọi hành động đều được ghi lại theo thời gian thực
-- **Workflow Tracking** — Theo dõi tiến độ qua 6 phase của D-AMS
 
 ---
 
@@ -124,24 +126,26 @@ Tool hoạt động trên **Kitty terminal** (Linux), mỗi agent được khở
 ```bash
 # Clone & install
 git clone https://github.com/nguyenthuongaz9/agents_manager.git
-cd agents_manager
-chmod +x install.sh agent-manager.sh
-./install.sh
+cd agents_manager/d-ams
+bash install.sh
 ```
 
-Sau khi cài đặt, dùng lệnh `agents` từ bất kỳ đâu:
+Sau khi cài đặt, dùng lệnh `d-ams` (hoặc `agents`) từ bất kỳ đâu:
 
 ```bash
-agents                    # Chế độ tương tác (khuyên dùng)
-agents --assemble         # Mở cả 3 agent trong Kitty tabs
-agents --launch CLAUDE    # Mở một agent cụ thể
-agents --log              # Xem session log gần nhất
+d-ams                     # Chế độ tương tác (khuyên dùng)
+d-ams --assemble          # Mở cả 3 agent trong Kitty tabs
+d-ams --launch CLAUDE     # Mở một agent cụ thể
+d-ams --log               # Xem session log gần nhất
+
+# Alias tương thích ngược
+agents                    # Tương đương d-ams
 ```
 
 Hoặc load toàn bộ layout (Manager + 3 agents):
 
 ```bash
-kitty --session config/d-ams.kitty.session
+kitty --session d-ams/config/kitty.session
 ```
 
 ---
@@ -164,22 +168,22 @@ Tool vận hành theo 6 phase:
 ### Cấu trúc thư mục
 
 ```
-agent-manager/
-├── agent-manager.sh        # Main orchestrator
-├── install.sh              # Script cài đặt
-├── config/
-│   ├── agents.conf         # Định nghĩa các agents
-│   └── d-ams.kitty.session # Kitty session layout
+d-ams/
+├── bin/
+│   └── d-ams             # Main executable
 ├── lib/
-│   ├── ui.sh               # Giao diện terminal (menu, màu sắc)
-│   ├── kitty.sh            # Tích hợp Kitty terminal
-│   └── logging.sh          # Ghi log session
-└── sessions/               # Lưu trữ log
-
-agent-management-system/    # Tài liệu kiến trúc D-AMS
-├── docs/                   # Architecture, agents, teams, workflow
-├── prompts/                # System prompts cho từng agent role
-└── examples/               # Mẫu yêu cầu dự án
+│   ├── ui.sh             # Terminal UI helpers
+│   ├── kitty.sh          # Kitty terminal integration
+│   ├── state.sh          # Project state persistence
+│   └── logging.sh        # Session logging utilities
+├── config/
+│   ├── agents.conf       # Agent definitions & settings
+│   └── kitty.session     # Kitty session layout
+├── prompts/              # System prompts per agent role
+├── docs/                 # Architecture documentation
+├── examples/             # Sample project requests
+├── sessions/             # Session logs & project workspaces
+└── install.sh            # Installation script
 ```
 
 ---

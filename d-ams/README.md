@@ -1,11 +1,12 @@
 <div align="center">
-  <h1>🤖 D-AMS Agent Manager</h1>
+  <h1>D-AMS Agent Manager</h1>
   <p><strong>Dynamic Agent Management System</strong></p>
   <p>Orchestrate Claude Code · Gemini · OpenCode in Kitty Terminal</p>
   <p>
     <img src="https://img.shields.io/badge/platform-linux-blue?style=flat-square" />
     <img src="https://img.shields.io/badge/terminal-kitty-orange?style=flat-square" />
-    <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" />
+    <img src="https://img.shields.io/badge/license-Apache%202.0-green?style=flat-square" />
+    <img src="https://img.shields.io/badge/version-1.1.0-purple?style=flat-square" />
   </p>
 </div>
 
@@ -28,12 +29,13 @@
 ## Features
 
 - **Interactive TUI** — Menu-driven interface to manage projects, agents, and tasks
-- **Kitty Integration** — Each agent gets its own Kitty tab or window with auto-launch
+- **Kitty Integration** — Each agent gets its own Kitty tab with auto-launch
 - **Team Assembly** — Assemble all 3 agents with a single command
+- **Project State Persistence** — Resume projects from last checkpoint
+- **Token Auto-retry** — Agents auto-pause on rate limit and resume automatically
+- **Session Management** — Delete logs, project workspaces, or full clean from menu
 - **Task Assignment** — Assign tasks to specific agents with full logging
-- **Session Logging** — Every action is timestamped and saved to `sessions/`
 - **Workflow Tracking** — Follow the 6-phase D-AMS lifecycle
-- **Single CLI Entry** — Use the `agents` command from anywhere
 
 ---
 
@@ -48,24 +50,26 @@
 
 ```bash
 git clone https://github.com/nguyenthuongaz9/agents_manager.git
-cd agents_manager
-chmod +x install.sh agent-manager.sh
-./install.sh
+cd agents_manager/d-ams
+bash install.sh
 ```
 
-Restart your terminal or run `source ~/.bashrc`, then use the `agents` command.
+Restart your terminal or run `source ~/.bashrc`, then use the `d-ams` command.
 
 ### Usage
 
 ```bash
-agents                    # Interactive mode (recommended)
-agents --assemble         # Launch all 3 agents in Kitty tabs
-agents --launch CLAUDE    # Launch a specific agent
-agents --launch GEMINI
-agents --launch OPENCODE
-agents --log              # View recent session log
-agents --help             # Show help
-agents --version          # Show version
+d-ams                     # Interactive mode (recommended)
+d-ams --assemble          # Launch all 3 agents in Kitty tabs
+d-ams --launch CLAUDE     # Launch a specific agent
+d-ams --launch GEMINI
+d-ams --launch OPENCODE
+d-ams --log               # View recent session log
+d-ams --help              # Show help
+d-ams --version           # Show version
+
+# Backward-compatible alias
+agents                    # Same as d-ams
 ```
 
 ### Kitty Session File
@@ -73,7 +77,7 @@ agents --version          # Show version
 Launch the full layout (manager + 3 agents) directly:
 
 ```bash
-kitty --session config/d-ams.kitty.session
+kitty --session config/kitty.session
 ```
 
 ---
@@ -99,12 +103,12 @@ Edit `config/agents.conf` to customize:
 
 - Agent names, commands, and icons
 - Default leader agent
-- Kitty session paths
+- Token retry wait time (`TOKEN_RETRY_WAIT`)
 - Workflow phases
 
 ```bash
-# Example: change OpenCode command
-AGENT_OPENCODE_COMMAND="opencode-v2"
+# Example: change token retry wait to 5 minutes
+TOKEN_RETRY_WAIT=300
 ```
 
 ---
@@ -112,22 +116,31 @@ AGENT_OPENCODE_COMMAND="opencode-v2"
 ## Project Structure
 
 ```
-agent-manager/
-├── agent-manager.sh        # Main orchestrator
-├── install.sh              # Installation script
-├── REFERENCE.md            # Quick reference card
-├── config/
-│   ├── agents.conf         # Agent definitions
-│   └── d-ams.kitty.session # Kitty session layout
+d-ams/
+├── bin/
+│   └── d-ams             # Main executable
 ├── lib/
-│   ├── ui.sh               # Terminal UI helpers
-│   ├── kitty.sh            # Kitty terminal integration
-│   └── logging.sh          # Session logging utilities
-└── sessions/               # Session log storage
+│   ├── ui.sh             # Terminal UI helpers
+│   ├── kitty.sh          # Kitty terminal integration
+│   ├── state.sh          # Project state persistence
+│   └── logging.sh        # Session logging utilities
+├── config/
+│   ├── agents.conf       # Agent definitions & settings
+│   └── kitty.session     # Kitty session layout
+├── prompts/              # System prompts per agent role
+│   ├── leader.md
+│   ├── backend-dev.md
+│   ├── tech-lead.md
+│   ├── qa.md
+│   └── dba.md
+├── docs/                 # Architecture documentation
+├── examples/             # Sample project requests
+├── sessions/             # Session logs & project workspaces
+└── install.sh            # Installation script
 ```
 
 ---
 
 ## License
 
-MIT
+Apache License 2.0
