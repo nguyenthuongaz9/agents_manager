@@ -7,7 +7,9 @@
 #===============================================================================
 
 VERSION="1.1.0"
-BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve symlinks so paths work whether run directly or via symlink
+_SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
+BIN_DIR="$(cd "$(dirname "$_SCRIPT")" && pwd)"
 ROOT_DIR="$(cd "$BIN_DIR/.." && pwd)"
 CONFIG_DIR="$ROOT_DIR/config"
 LIB_DIR="$ROOT_DIR/lib"

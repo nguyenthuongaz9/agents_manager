@@ -15,7 +15,8 @@ fi
 
 mkdir -p "$INSTALL_DIR" "$SHARE_DIR/sessions"
 
-# Copy tool to share dir
+# Sync tool files (clean old files first to avoid stale copies)
+rm -rf "$SHARE_DIR/bin" "$SHARE_DIR/lib" "$SHARE_DIR/config" "$SHARE_DIR/prompts"
 cp -r "$TOOL_DIR/bin" "$TOOL_DIR/lib" "$TOOL_DIR/config" "$TOOL_DIR/prompts" "$SHARE_DIR/"
 chmod +x "$SHARE_DIR/bin/d-ams"
 
