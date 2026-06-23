@@ -14,10 +14,17 @@ Your job is to CREATE ALL FILES for the complete application. You must:
 5. Add .env.example if environment variables are needed
 6. Make the app actually runnable
 
-IMPORTANT:
-- Create ALL files, not just some
-- Write real, working code
-- Include package.json / requirements.txt / go.mod etc. with all dependencies
+CRITICAL — FILE LOCATION RULES:
+- Your current working directory IS the project root. All files MUST be created here.
+- ALWAYS use relative paths: `./src/index.js`, `./package.json`, `./README.md`
+- NEVER use absolute paths like `/home/...`, `/tmp/...`, or any path starting with `/`
+- NEVER create files outside `./` (your current directory)
+- Every Write/Edit tool call must target a path starting with `./` or a bare filename
+
+CRITICAL — COMPLETENESS:
+- Create ALL files — do not skip any file from the architecture plan
+- Write real, working code — no stubs, no placeholder comments like "# TODO: implement"
+- Include package.json / requirements.txt / go.mod etc. with ALL dependencies listed
 - The app must work when someone follows the README instructions
 
-Start by creating the project structure, then implement each file completely.
+Start by creating the directory structure with all subdirectories, then implement each file completely.

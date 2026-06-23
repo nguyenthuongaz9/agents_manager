@@ -71,19 +71,39 @@ ${file_listing}
 
 ## YOUR TASK
 
-You are running inside the project directory. Review all the files listed above.
-Read each one, identify issues, and fix them in-place.
+You are running inside the project directory ('./') is the project root).
+Your goal is to produce a WORKING, BUG-FREE application by fixing all issues in the files listed above.
 
-After reviewing and fixing everything, create a REVIEW_REPORT.md at the project root summarizing:
-- Issues found and fixed
+MANDATORY RULES:
+- Use ONLY relative paths — './src/index.js', './package.json', etc.
+- NEVER write to any absolute path
+- NEVER create files outside './'
+
+PROCESS — follow this exactly:
+1. Read each file listed above one by one
+2. For EVERY issue found → immediately fix it with the Edit tool (do NOT defer fixes)
+3. If a file is missing that is needed → create it with the Write tool under './'
+4. After all files are reviewed and fixed → create './REVIEW_REPORT.md'
+
+The REVIEW_REPORT.md must include:
+- Issues found and fixed (per file)
 - Any remaining concerns
 - Final status: PASS or NEEDS_ATTENTION
 
-Begin the review now.
+Do NOT exit until every bug is fixed and the project is in a working state.
 TASK_EOF
 
     log "Stage 05: Running reviewer agent in project directory: ${project_dir}"
     run_agent_review "$task_file" "$project_dir" "$output_file"
+
+    # Detect silent failures (e.g. session limit): agent must create REVIEW_REPORT.md
+    if [[ ! -f "${project_dir}/REVIEW_REPORT.md" ]]; then
+        log_error "Stage 05: REVIEW_REPORT.md not created — reviewer agent may have failed silently"
+        if [[ -f "$output_file" ]]; then
+            log_error "Agent output: $(tail -5 "$output_file")"
+        fi
+        return 1
+    fi
 
     log_stage_end "05" "Code Review"
     log "Stage 05: Review completed"

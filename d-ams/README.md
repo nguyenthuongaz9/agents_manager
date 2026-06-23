@@ -1,11 +1,11 @@
 <div align="center">
   <h1>D-AMS Agent Manager</h1>
   <p><strong>Dynamic Agent Management System</strong></p>
-  <p>Orchestrate Claude Code · Gemini · OpenCode in Kitty Terminal</p>
+  <p>Orchestrate Claude subagents as a full dev team in Kitty Terminal</p>
   <p>
     <img src="https://img.shields.io/badge/platform-linux-blue?style=flat-square" />
     <img src="https://img.shields.io/badge/terminal-kitty-orange?style=flat-square" />
-    <img src="https://img.shields.io/badge/version-1.1.0-purple?style=flat-square" />
+    <img src="https://img.shields.io/badge/version-2.0.0-purple?style=flat-square" />
     <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" />
   </p>
 </div>
@@ -16,13 +16,14 @@
 
 **D-AMS** is a terminal orchestration tool that coordinates multiple AI coding agents as a team. It launches each agent in its own [Kitty](https://sw.kovidgoyal.net/kitty/) tab, tracks project progress, and automatically handles interruptions — including token/rate limit pauses with timed auto-resume.
 
-### Managed Agents
+### Managed Agents (all powered by Claude)
 
 | Agent | Role | Command |
 |-------|------|---------|
-| 🟣 **Claude Code** | Backend Developer / Systems Programmer | `claude` |
-| 🔵 **Gemini** | Leader Agent / Tech Lead | `gemini` |
-| 🟢 **OpenCode** | QA/QC Engineer / Frontend Developer | `opencode` |
+| 🟣 **Tech Lead** | Architecture, task breakdown, team coordination | `claude` |
+| 🔵 **Backend Dev** | Server, REST API, database schema, business logic | `claude` |
+| 🟢 **Frontend Dev** | UI components, pages, styles, client-side logic | `claude` |
+| 🟠 **QA Engineer** | Tests, validation, bug discovery and reporting | `claude` |
 
 ---
 
@@ -44,7 +45,7 @@
 ## Requirements
 
 - Linux with [Kitty terminal](https://sw.kovidgoyal.net/kitty/) (`listen_on` enabled for remote control)
-- At least one of: `claude`, `gemini`, `opencode` in `$PATH`
+- `claude` CLI in `$PATH` (Claude Code)
 - `bash` 4.0+, `sed`, `find`, `python3` (for Kitty window lookup)
 
 ---

@@ -25,6 +25,11 @@ state_init() {
         printf 'UPDATED_AT=%s\n' "$now"
     } > "$state_file"
 
+    # Initialize hierarchical memory system for this workspace
+    if declare -f memory_init &>/dev/null; then
+        memory_init "$workspace" "$project_name"
+    fi
+
     for key in "${AGENTS_LIST[@]}"; do
         printf 'AGENT_%s_STATUS=pending\n' "$key"    >> "$state_file"
         printf 'AGENT_%s_TASK=\n' "$key"             >> "$state_file"

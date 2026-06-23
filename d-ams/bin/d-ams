@@ -2,11 +2,11 @@
 #===============================================================================
 # D-AMS Agent Manager
 # Dynamic Agent Management System - Terminal Orchestrator
-# Manages: Claude Code | Gemini | OpenCode
+# Manages: Claude subagents (Tech Lead, Backend, Frontend, QA)
 # Platform: Linux (Kitty Terminal)
 #===============================================================================
 
-VERSION="1.1.0"
+VERSION="2.0.0"
 # Resolve symlinks so paths work whether run directly or via symlink
 _SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
 BIN_DIR="$(cd "$(dirname "$_SCRIPT")" && pwd)"
@@ -25,6 +25,8 @@ source "$LIB_DIR/logging.sh"
 source "$LIB_DIR/ui.sh"
 source "$LIB_DIR/kitty.sh"
 source "$LIB_DIR/state.sh"
+source "$LIB_DIR/analyzer.sh"
+source "$LIB_DIR/memory.sh"
 
 # ---- Globals ----
 CURRENT_SESSION=""
@@ -33,6 +35,7 @@ PROJECT_NAME=""
 PROJECT_TYPE=""
 PROJECT_REQUIREMENTS=""
 CURRENT_WORKSPACE=""
+ACTIVE_TEAM_KEYS=""   # space-separated agent keys for the current project
 
 # ---- Helper: resolve agent key from number ----
 agent_key_from_num() {
@@ -50,8 +53,15 @@ _show_agent_statuses() {
     [ -z "$workspace" ] && return
     [ ! -f "$workspace/project-state.conf" ] && return
 
+    # Use active team from state file if available, else fall back to AGENTS_LIST
+    local active_keys="${ACTIVE_TEAM_KEYS:-}"
+    if [ -z "$active_keys" ]; then
+        local _saved; _saved=$(grep '^ACTIVE_TEAM_KEYS=' "$workspace/project-state.conf" 2>/dev/null | cut -d= -f2-)
+        active_keys="${_saved:-${AGENTS_LIST[*]}}"
+    fi
+
     echo -e "${BOLD}Agent Progress:${NC}"
-    for key in "${AGENTS_LIST[@]}"; do
+    for key in $active_keys; do
         local name_var="AGENT_${key}_NAME"
         local icon_var="AGENT_${key}_ICON"
         local status checkpoint retry_count
@@ -104,6 +114,7 @@ main_menu() {
             "View Session Log"
             "Manage Sessions"
             "Workflow Status"
+            "View Memory Status"
             "Configure Settings"
             "Help / About"
         )
@@ -121,8 +132,9 @@ main_menu() {
             6) cmd_view_log ;;
             7) cmd_manage_sessions ;;
             8) cmd_workflow ;;
-            9) cmd_settings ;;
-            10) cmd_help ;;
+            9) cmd_memory_status ;;
+            10) cmd_settings ;;
+            11) cmd_help ;;
             0) cmd_exit ;;
             *) echo -e "${RED}Invalid choice${NC}"; sleep 1 ;;
         esac
@@ -134,8 +146,14 @@ cmd_new_project() {
     ui_clear
     ui_header "New Project" "Phase 1: Intake & Analysis"
 
+    local workspace_is_cwd=0
     while true; do
-        ui_read PROJECT_NAME "Enter project name" "my-project"
+        ui_read PROJECT_NAME "Enter project name (use '.' for current dir)" "my-project"
+        if [ "$PROJECT_NAME" = "." ] || [ "$PROJECT_NAME" = "./" ]; then
+            PROJECT_NAME="$(basename "$(pwd)")"
+            workspace_is_cwd=1
+            break
+        fi
         PROJECT_NAME="${PROJECT_NAME//[\/. ]/-}"
         PROJECT_NAME="${PROJECT_NAME#-}"
         PROJECT_NAME="${PROJECT_NAME%-}"
@@ -177,22 +195,75 @@ cmd_new_project() {
         PROJECT_REQUIREMENTS="${PROJECT_REQUIREMENTS% }"
     fi
 
-    local team_desc=""
-    case "$PROJECT_TYPE" in
-        web)    team_desc="Web App Team: Backend Dev + Frontend Dev + DBA" ;;
-        mobile) team_desc="Mobile Team: Mobile Dev + UI/UX + Backend API" ;;
-        cli)    team_desc="CLI Tool Team: Systems Programmer + Tech Writer" ;;
-        ai)     team_desc="AI Team: ML Engineer + Data Scientist + DBA" ;;
-        *)      team_desc="Custom assembly based on requirements" ;;
-    esac
+    # ---- Auto-analyze requirements ----
+    echo ""
+    echo -e "${CYAN}${BOLD}Analyzing requirements...${NC}"
+    run_analysis "$PROJECT_REQUIREMENTS" "$PROJECT_TYPE" "" ""  # workspace not set yet
+
+    # Display detected stack
+    if [ -n "$STACK_STR" ]; then
+        echo -e "  ${BOLD}Detected stack:${NC} ${STACK_STR}"
+    fi
+
+    # Display detected team and allow user to toggle agents
+    echo ""
+    echo -e "${BOLD}Recommended team (based on requirements):${NC}"
+    echo ""
+    local -a team_arr=()
+    read -ra team_arr <<< "$TEAM_KEYS"
+
+    local -A in_team=()
+    for k in "${team_arr[@]}"; do in_team[$k]=1; done
+
+    local idx=1
+    local -a all_keys=("${AGENTS_LIST[@]}")
+    for k in "${all_keys[@]}"; do
+        local name_var="AGENT_${k}_NAME"
+        local icon_var="AGENT_${k}_ICON"
+        local role_var="AGENT_${k}_ROLE"
+        if [[ -n "${in_team[$k]:-}" ]]; then
+            echo -e "  ${CYAN}${idx})${NC} ${!icon_var} ${BOLD}${!name_var}${NC} ${DIM}(${!role_var})${NC} ${GREEN}[✓ selected]${NC}"
+        else
+            echo -e "  ${CYAN}${idx})${NC} ${!icon_var} ${DIM}${!name_var} (${!role_var}) [not selected]${NC}"
+        fi
+        ((idx++))
+    done
+    echo ""
+    echo -e "${DIM}Toggle agents by number (space-separated), or press Enter to accept:${NC}"
+    read -r toggles
+    for t in $toggles; do
+        if [[ "$t" =~ ^[0-9]+$ ]] && [ "$t" -ge 1 ] && [ "$t" -le "${#all_keys[@]}" ]; then
+            local tk="${all_keys[$((t-1))]}"
+            if [[ -n "${in_team[$tk]:-}" ]]; then
+                # LEADER and QA are mandatory
+                if [[ "$tk" == "LEADER" || "$tk" == "QA" ]]; then
+                    echo -e "${YELLOW}  ${tk} is required and cannot be removed.${NC}"
+                else
+                    unset "in_team[$tk]"
+                fi
+            else
+                in_team[$tk]=1
+            fi
+        fi
+    done
+
+    # Rebuild TEAM_KEYS in canonical order
+    TEAM_KEYS=""
+    local ordered_keys=(LEADER BACKEND FRONTEND DBA MOBILE ML DATA DEVOPS SECURITY QA)
+    for k in "${ordered_keys[@]}"; do
+        [[ -n "${in_team[$k]:-}" ]] && TEAM_KEYS+=" $k"
+    done
+    TEAM_KEYS="${TEAM_KEYS# }"
+    ACTIVE_TEAM_KEYS="$TEAM_KEYS"
 
     echo ""
-    echo -e "${BOLD}Project:${NC}      ${PROJECT_NAME}"
-    echo -e "${BOLD}Type:${NC}         ${PROJECT_TYPE}"
-    echo -e "${BOLD}Team:${NC}         ${team_desc}"
-    echo -e "${BOLD}Leader:${NC}       $(eval echo \$AGENT_${LEADER}_NAME)"
+    echo -e "${BOLD}Final team:${NC} ${TEAM_KEYS}"
+    echo ""
     local req_preview="${PROJECT_REQUIREMENTS:0:80}"
     [ "${#PROJECT_REQUIREMENTS}" -gt 80 ] && req_preview+="..."
+    echo -e "${BOLD}Project:${NC}      ${PROJECT_NAME}"
+    echo -e "${BOLD}Type:${NC}         ${PROJECT_TYPE}"
+    echo -e "${BOLD}Stack:${NC}        ${STACK_STR:-auto-detect}"
     echo -e "${BOLD}Requirements:${NC} ${DIM}${req_preview}${NC}"
     echo ""
     ui_confirm "Start project and assemble team?"
@@ -203,25 +274,48 @@ cmd_new_project() {
         log_phase 1 "Intake & Analysis"
         log_info "PROJECT" "Created project: ${PROJECT_NAME} (${PROJECT_TYPE})"
         log_info "LEADER"  "Leader: $(eval echo \$AGENT_${LEADER}_NAME)"
+        log_info "TEAM"    "Active team: ${TEAM_KEYS}"
+        log_info "STACK"   "Detected stack: ${STACK_STR:-unknown}"
 
-        local workspace="${SESSION_DIR}/${PROJECT_NAME}_workspace"
-        mkdir -p "$workspace"
+        local workspace
+        if [ "$workspace_is_cwd" -eq 1 ]; then
+            workspace="$(pwd)"
+        else
+            workspace="${SESSION_DIR}/${PROJECT_NAME}_workspace"
+            mkdir -p "$workspace"
+        fi
+
+        # Write requirements
         printf '%s\n' "$PROJECT_REQUIREMENTS" > "$workspace/requirements.md"
-        printf '# %s\n\nProject type: %s\n\nSee requirements.md for full requirements.\n' \
-            "$PROJECT_NAME" "$PROJECT_TYPE" > "$workspace/CLAUDE.md"
+
+        # Generate .claude/ config (writes CLAUDE.md, settings.json, slash commands)
+        run_analysis "$PROJECT_REQUIREMENTS" "$PROJECT_TYPE" "$workspace" "$PROJECT_NAME"
+        log_info "CLAUDE_CONFIG" "Generated .claude/ in: ${workspace}"
+
         log_info "WORKSPACE" "Created: $workspace"
 
-        # Initialize project state file
+        # Initialize project state file and memory system
         state_init "$workspace" "$PROJECT_NAME" "$PROJECT_TYPE" 2
+        memory_init "$workspace" "$PROJECT_NAME"
         CURRENT_WORKSPACE="$workspace"
 
-        # Record default tasks for each agent in state
-        for key in "${AGENTS_LIST[@]}"; do
+        # Persist active team in state file so resume can reload it
+        echo "ACTIVE_TEAM_KEYS=${TEAM_KEYS}" >> "$workspace/project-state.conf"
+
+        # Record tasks for each active agent in state
+        for key in $TEAM_KEYS; do
             local default_task
             case "$key" in
-                CLAUDE)   default_task="Backend: server, REST API, database schema, business logic" ;;
-                GEMINI)   default_task="Tech Lead: architecture design, team coordination, code review" ;;
-                OPENCODE) default_task="Frontend & QA: UI components, frontend logic, tests" ;;
+                LEADER)   default_task="Tech Lead: design architecture, define tech stack, break down tasks, guide team" ;;
+                BACKEND)  default_task="Backend Dev: implement server, REST API endpoints, database schema, business logic" ;;
+                FRONTEND) default_task="Frontend Dev: build UI components, pages, styles, client-side logic, connect to API" ;;
+                DBA)      default_task="DBA: design database schema, write migrations, set up indexes and seed data" ;;
+                MOBILE)   default_task="Mobile Dev: build all screens, navigation, state management, and API integration" ;;
+                ML)       default_task="ML Engineer: build data pipeline, model definition, training and inference code" ;;
+                DATA)     default_task="Data Scientist: write data loading, analysis, and visualisation scripts" ;;
+                DEVOPS)   default_task="DevOps: write Dockerfile, CI/CD pipeline, and infrastructure configs" ;;
+                SECURITY) default_task="Security Eng: audit codebase, fix vulnerabilities, implement auth and validation" ;;
+                QA)       default_task="QA Engineer: write tests, validate all requirements, discover and document bugs" ;;
                 *)        default_task="Implement assigned project components" ;;
             esac
             state_update_agent "$workspace" "$key" "pending" "$default_task"
@@ -233,7 +327,8 @@ cmd_new_project() {
         echo ""
         echo -e "${GREEN}Team Assembly Phase${NC}"
         echo -e "Launching agents in Kitty tabs..."
-        kitty_assemble_team "$ROOT_DIR" "$PROJECT_NAME" "$PROJECT_TYPE" "$PROJECT_REQUIREMENTS" "$workspace"
+        export ACTIVE_TEAM_KEYS="$TEAM_KEYS"
+        kitty_assemble_team "$ROOT_DIR" "$PROJECT_NAME" "$PROJECT_TYPE" "$PROJECT_REQUIREMENTS" "$workspace" "$TEAM_KEYS"
 
         log_info "TEAM" "Team assembled for ${PROJECT_NAME}"
         CURRENT_PHASE=3
@@ -241,11 +336,12 @@ cmd_new_project() {
 
         echo ""
         echo -e "${GREEN}✓ Project ${PROJECT_NAME} initialized${NC}"
-        echo -e "  ${DIM}Workspace:${NC}   ${workspace}"
-        echo -e "  ${DIM}Session log:${NC} $LOG_FILE"
+        echo -e "  ${DIM}Workspace:${NC}      ${workspace}"
+        echo -e "  ${DIM}.claude config:${NC}  ${workspace}/.claude/"
+        echo -e "  ${DIM}Session log:${NC}     $LOG_FILE"
         echo ""
-        echo -e "${DIM}Agents write checkpoints to:${NC}"
-        for key in "${AGENTS_LIST[@]}"; do
+        echo -e "${DIM}Agent checkpoints:${NC}"
+        for key in $TEAM_KEYS; do
             echo -e "  ${DIM}${workspace}/checkpoint-${key}.md${NC}"
         done
         ui_pause
@@ -302,12 +398,18 @@ cmd_continue_project() {
 
     CURRENT_WORKSPACE="$workspace"
 
+    # Restore active team from state file
+    local _saved_team; _saved_team=$(grep '^ACTIVE_TEAM_KEYS=' "$workspace/project-state.conf" 2>/dev/null | cut -d= -f2-)
+    ACTIVE_TEAM_KEYS="${_saved_team:-${AGENTS_LIST[*]}}"
+    export ACTIVE_TEAM_KEYS
+
     ui_clear
     ui_header "Continue Project" "Project: ${PROJECT_NAME} (Phase ${CURRENT_PHASE})"
 
     echo -e "${BOLD}Project:${NC} ${PROJECT_NAME}"
     echo -e "${BOLD}Type:${NC}    ${PROJECT_TYPE}"
     echo -e "${BOLD}Phase:${NC}   ${CURRENT_PHASE}"
+    echo -e "${BOLD}Team:${NC}    ${ACTIVE_TEAM_KEYS}"
     echo ""
     _show_agent_statuses "$workspace"
 
@@ -319,7 +421,7 @@ cmd_continue_project() {
     log_info "RESUME" "Resuming project: ${PROJECT_NAME} (Phase ${CURRENT_PHASE})"
 
     # Build continue prompts for agents that are not completed
-    for key in "${AGENTS_LIST[@]}"; do
+    for key in $ACTIVE_TEAM_KEYS; do
         local status task checkpoint
         status=$(state_get "$workspace" "AGENT_${key}_STATUS")
         task=$(state_get "$workspace" "AGENT_${key}_TASK")
@@ -335,7 +437,7 @@ cmd_continue_project() {
             continue
         fi
 
-        kitty_build_prompt         "$key" "$PROJECT_NAME" "$PROJECT_TYPE" \
+        kitty_build_prompt          "$key" "$PROJECT_NAME" "$PROJECT_TYPE" \
             > "/tmp/d-ams-${key}.brief"
         kitty_build_continue_prompt "$key" "$PROJECT_NAME" "$PROJECT_TYPE" \
             "$task" "$checkpoint" "$workspace" \
@@ -347,11 +449,111 @@ cmd_continue_project() {
     echo ""
     echo -e "${GREEN}Resuming team for ${PROJECT_NAME}...${NC}"
     kitty_assemble_team "$ROOT_DIR" "$PROJECT_NAME" "$PROJECT_TYPE" \
-        "$PROJECT_REQUIREMENTS" "$workspace"
+        "$PROJECT_REQUIREMENTS" "$workspace" "$ACTIVE_TEAM_KEYS"
 
     log_info "TEAM" "Team reassembled for resume: ${PROJECT_NAME}"
     echo ""
     echo -e "${GREEN}✓ Project resumed${NC}"
+    ui_pause
+}
+
+# ---- Command: View Memory Status ----
+cmd_memory_status() {
+    ui_clear
+    local ws="${CURRENT_WORKSPACE:-}"
+    ui_header "Memory Status" "${ws:-No active project}"
+
+    if [ -z "$ws" ]; then
+        # Show all projects with memory
+        echo -e "${YELLOW}No active project loaded. Showing all projects with memory:${NC}"
+        echo ""
+        local found=0
+        while IFS='|' read -r pws pname pphase _; do
+            local mem_dir="$pws/.memory"
+            [ -d "$mem_dir" ] || continue
+            found=1
+            echo -e "${BOLD}${pname}${NC} (Phase ${pphase})"
+            echo -e "  ${DIM}${pws}${NC}"
+            memory_stats "$pws"
+        done < <(state_list_projects "$SESSION_DIR")
+        [ "$found" -eq 0 ] && echo -e "${DIM}No projects with memory found.${NC}"
+        ui_pause
+        return
+    fi
+
+    echo -e "${BOLD}Project Memory Index:${NC}"
+    echo ""
+    memory_view_index "$ws"
+    echo ""
+    echo -e "${BOLD}Memory Statistics:${NC}"
+    memory_stats "$ws"
+
+    echo ""
+    echo -e "${CYAN}${BOLD}Options:${NC}"
+    echo -e "  ${CYAN}1)${NC} View agent snapshot"
+    echo -e "  ${CYAN}2)${NC} View completed tasks log"
+    echo -e "  ${CYAN}3)${NC} View known issues"
+    echo -e "  ${CYAN}4)${NC} View resume checkpoint"
+    echo -e "  ${CYAN}0)${NC} Back"
+    echo ""
+    ui_ask "Choice"
+    read -r mchoice
+
+    case "$mchoice" in
+        1)
+            echo ""
+            echo -e "${BOLD}Choose agent:${NC}"
+            local i=1
+            local keys=()
+            for key in $ACTIVE_TEAM_KEYS; do
+                local nv="AGENT_${key}_NAME"
+                echo -e "  ${CYAN}${i})${NC} ${key} — ${!nv}"
+                keys+=("$key")
+                ((i++))
+            done
+            ui_ask "Agent"
+            read -r ak
+            if [[ "$ak" =~ ^[0-9]+$ ]] && [ "$ak" -ge 1 ] && [ "$ak" -le "${#keys[@]}" ]; then
+                echo ""
+                memory_view_agent "$ws" "${keys[$((ak-1))]}"
+            fi
+            ;;
+        2)
+            echo ""
+            cat "$ws/.memory/semantic/completed.md" 2>/dev/null || echo "  (no completed tasks yet)"
+            ;;
+        3)
+            echo ""
+            cat "$ws/.memory/semantic/issues.md" 2>/dev/null || echo "  (no issues logged yet)"
+            ;;
+        4)
+            echo ""
+            echo -e "${BOLD}Choose agent for resume checkpoint:${NC}"
+            local i=1
+            local keys=()
+            for key in $ACTIVE_TEAM_KEYS; do
+                local nv="AGENT_${key}_NAME"
+                local rf="$ws/.memory/resume/${key}-resume.md"
+                local mark=""
+                [ -f "$rf" ] && mark=" ${YELLOW}[checkpoint exists]${NC}"
+                echo -e "  ${CYAN}${i})${NC} ${key} — ${!nv}${mark}"
+                keys+=("$key")
+                ((i++))
+            done
+            ui_ask "Agent"
+            read -r ak
+            if [[ "$ak" =~ ^[0-9]+$ ]] && [ "$ak" -ge 1 ] && [ "$ak" -le "${#keys[@]}" ]; then
+                local key="${keys[$((ak-1))]}"
+                local rf="$ws/.memory/resume/${key}-resume.md"
+                echo ""
+                if [ -f "$rf" ]; then
+                    cat "$rf"
+                else
+                    echo "  No resume checkpoint for ${key}"
+                fi
+            fi
+            ;;
+    esac
     ui_pause
 }
 
@@ -772,7 +974,7 @@ cmd_help() {
     echo "  • Token Auto-retry — agents pause ${TOKEN_RETRY_WAIT:-3600}s on rate limit, then resume"
     echo "  • Manage Sessions — delete logs, workspaces, or full clean (menu option 7)"
     echo ""
-    echo -e "${BOLD}MANAGED AGENTS${NC}"
+    echo -e "${BOLD}MANAGED AGENTS (all powered by Claude)${NC}"
     for key in "${AGENTS_LIST[@]}"; do
         ui_agent_card "$key"
     done
@@ -791,7 +993,7 @@ cmd_help() {
     echo "  Configure: TOKEN_RETRY_WAIT in config/agents.conf"
     echo ""
     echo -e "${BOLD}KITTY INTEGRATION${NC}"
-    echo "  Each agent runs in its own Kitty tab with a self-healing launcher."
+    echo "  Each Claude subagent runs in its own Kitty tab with a self-healing launcher."
     echo ""
     echo -e "${BOLD}CONFIGURATION${NC}"
     echo "  Edit: config/agents.conf"
@@ -803,7 +1005,7 @@ cmd_help() {
 # ---- Command: Exit ----
 cmd_exit() {
     echo ""
-    echo -e "${CYAN}Thank you for using D-AMS Agent Manager${NC}"
+    echo -e "${CYAN}Thank you for using D-AMS — Claude Multi-Agent Manager${NC}"
     echo -e "${DIM}Logs saved to: ${SESSION_DIR}${NC}"
     [ -n "$CURRENT_WORKSPACE" ] && echo -e "${DIM}Project state: ${CURRENT_WORKSPACE}/project-state.conf${NC}"
     echo ""

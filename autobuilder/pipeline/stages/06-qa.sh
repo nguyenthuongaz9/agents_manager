@@ -74,21 +74,40 @@ echo ""
 fi)
 ## YOUR TASK
 
-You are running inside the project directory. Your job is to:
+You are running inside the project directory ('./') is the project root).
+Your goal is to ensure the project is COMPLETE and READY — implement anything missing, fix anything broken.
 
-1. Read through the project files
-2. Verify all requirements are implemented
-3. Create a test.sh script that validates the application works
-4. Create a QA_REPORT.md with your findings
-5. If any critical features are missing, implement them now
+MANDATORY RULES:
+- Use ONLY relative paths — './test.sh', './QA_REPORT.md', etc.
+- NEVER write to any absolute path
+- NEVER create files outside './'
 
-The project must be in a READY state when you are done. Fix anything that is broken or incomplete.
+PROCESS — follow this exactly:
+1. Read every file listed above
+2. For each requirement in SECTION 1 — verify it is implemented
+   - If NOT implemented → implement it now by writing/editing files under './'
+3. Fix any bugs, broken imports, or missing dependencies you find
+4. Create './test.sh' — a script that tests the application works (make it executable)
+5. Create './QA_REPORT.md' with:
+   - Requirements coverage (check/cross for each requirement)
+   - What was fixed or implemented during QA
+   - Security checklist
+   - Final verdict: READY | NEEDS_FIXES
 
-Begin QA validation now.
+The project MUST be fully working and complete when you finish. Do not stop until it is READY.
 TASK_EOF
 
     log "Stage 06: Running QA agent in project directory: ${project_dir}"
     run_agent_review "$task_file" "$project_dir" "$output_file"
+
+    # Detect silent failures (e.g. session limit): agent must create QA_REPORT.md
+    if [[ ! -f "${project_dir}/QA_REPORT.md" ]]; then
+        log_error "Stage 06: QA_REPORT.md not created — QA agent may have failed silently"
+        if [[ -f "$output_file" ]]; then
+            log_error "Agent output: $(tail -5 "$output_file")"
+        fi
+        return 1
+    fi
 
     # Mark completion
     {

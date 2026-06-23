@@ -71,17 +71,20 @@ ${build_plan}
 
 ## YOUR TASK
 
-You are now running inside the project directory. Create ALL the files described in the architecture
-and build plan above. Start immediately — create the directory structure, then implement every file.
+You are now running inside the project directory ('./' is your project root).
+Create ALL the files described in the architecture and build plan above.
 
-Important reminders:
-- Write complete, working code for every file
+MANDATORY RULES:
+- Use ONLY relative paths — './src/index.js', './package.json', etc.
+- NEVER write to any absolute path ('/home/', '/tmp/', etc.)
+- NEVER create files outside './'
+- Write complete, working code for every file — no stubs, no TODOs
 - Include all dependencies in package.json / requirements.txt / go.mod / etc.
 - Add a README.md with setup and run instructions
 - Add .env.example if the app needs environment variables
-- Every file must be production-ready, not a stub
+- Every file must be production-ready
 
-Begin creating files now.
+Start by creating all directories, then implement every file completely. Do not stop until ALL files are created.
 TASK_EOF
 
     log "Stage 04: Running builder agent in project directory: ${project_dir}"

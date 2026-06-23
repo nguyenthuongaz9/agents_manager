@@ -62,10 +62,19 @@ run_agent_build() {
     local prompt
     prompt="$(cat "$task_file")"
 
+    # Prepend an explicit working-directory reminder so the agent never
+    # resolves to an absolute path outside this directory.
+    local scoped_prompt
+    scoped_prompt="WORKING DIRECTORY: $(realpath "$workspace_dir")
+You MUST only create or edit files inside this directory.
+Use relative paths (./filename) for all file operations.
+
+${prompt}"
+
     local start_ts
     start_ts=$(date +%s)
 
-    if ! (cd "$workspace_dir" && "${CLAUDE_CMD}" --dangerously-skip-permissions -p "$prompt" 2>&1); then
+    if ! (cd "$workspace_dir" && "${CLAUDE_CMD}" --dangerously-skip-permissions -p "$scoped_prompt" 2>&1); then
         log_error "Build agent failed in ${workspace_dir}"
         return 1
     fi
@@ -74,6 +83,15 @@ run_agent_build() {
     end_ts=$(date +%s)
     local duration=$(( end_ts - start_ts ))
     log "Build agent completed in ${duration}s" "AGENT"
+
+    # Verify agent actually created files inside the workspace
+    local file_count
+    file_count=$(find "$workspace_dir" -type f | wc -l)
+    if [[ "$file_count" -eq 0 ]]; then
+        log_error "Build agent created no files inside ${workspace_dir}"
+        return 1
+    fi
+    log_debug "Build agent created ${file_count} file(s) in ${workspace_dir}"
 }
 
 # run_agent_review: Run claude inside a project directory for review/QA.
@@ -100,17 +118,27 @@ run_agent_review() {
     local prompt
     prompt="$(cat "$task_file")"
 
+    # Prepend an explicit working-directory reminder so the agent edits
+    # files inside this directory only, using relative paths.
+    local scoped_prompt
+    scoped_prompt="WORKING DIRECTORY: $(realpath "$workspace_dir")
+You MUST only create or edit files inside this directory.
+Use relative paths (./filename) for all file operations.
+Fix issues by editing the actual files — do not just report them.
+
+${prompt}"
+
     local start_ts
     start_ts=$(date +%s)
 
     if [[ -n "$output_file" ]]; then
-        if ! (cd "$workspace_dir" && "${CLAUDE_CMD}" --dangerously-skip-permissions -p "$prompt" 2>&1) \
+        if ! (cd "$workspace_dir" && "${CLAUDE_CMD}" --dangerously-skip-permissions -p "$scoped_prompt" 2>&1) \
              | tee "$output_file"; then
             log_error "Review agent failed in ${workspace_dir}"
             return 1
         fi
     else
-        if ! (cd "$workspace_dir" && "${CLAUDE_CMD}" --dangerously-skip-permissions -p "$prompt" 2>&1); then
+        if ! (cd "$workspace_dir" && "${CLAUDE_CMD}" --dangerously-skip-permissions -p "$scoped_prompt" 2>&1); then
             log_error "Review agent failed in ${workspace_dir}"
             return 1
         fi
